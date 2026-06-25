@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TTB Label Verification</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>TTB Alcohol Label Verification</h1>
+    <p class="subtitle">Automated compliance checking &mdash; runs fully offline, no data leaves this machine.</p>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab-btn active" onclick="showTab('single', this)">Single Label</button>
+    <button class="tab-btn" onclick="showTab('batch', this)">Batch Review</button>
+  </nav>
+
+  <!-- Single label -->
+  <section id="single" class="tab-pane">
+    <h2>Single Label Review</h2>
+    <div class="columns">
+      <div class="col">
+        <label class="upload-zone" for="image-input" id="upload-zone">
+          <input type="file" id="image-input" accept=".jpg,.jpeg,.png" onchange="previewImage(this)">
+          <div id="upload-placeholder">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="1.5">
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            <p>Click or drag a label image here<br><small>JPG or PNG</small></p>
+          </div>
+          <img id="preview" alt="Label preview" style="display:none">
+        </label>
+      </div>
+
+      <div class="col">
+        <h3>Application Form Fields</h3>
+        <div class="form-group">
+          <label for="brand_name">Brand Name</label>
+          <input type="text" id="brand_name" placeholder="e.g. OLD TOM DISTILLERY">
+        </div>
+        <div class="form-group">
+          <label for="class_type">Class / Type</label>
+          <input type="text" id="class_type" placeholder="e.g. Kentucky Straight Bourbon Whiskey">
+        </div>
+        <div class="form-group">
+          <label for="abv_percent">Alcohol Content (ABV)</label>
+          <input type="text" id="abv_percent" placeholder="e.g. 45  (numeric, no % needed)">
+        </div>
+        <div class="form-group">
+          <label for="net_contents">Net Contents</label>
+          <input type="text" id="net_contents" placeholder="e.g. 750 mL">
+        </div>
+        <button class="btn-primary" onclick="verifyLabel()">Verify Label</button>
+      </div>
+    </div>
+
+    <div id="result"></div>
+  </section>
+
+  <!-- Batch -->
+  <section id="batch" class="tab-pane" style="display:none">
+    <h2>Batch Review</h2>
+    <p class="hint">Upload a CSV with columns: <code>filename, brand_name, class_type, abv_percent, net_contents</code> — then upload the matching label images.</p>
+    <div class="form-group">
+      <label for="batch-csv">Expected Fields CSV</label>
+      <input type="file" id="batch-csv" accept=".csv">
+    </div>
+    <div class="form-group">
+      <label for="batch-images">Label Images</label>
+      <input type="file" id="batch-images" accept=".jpg,.jpeg,.png" multiple>
+    </div>
+    <button class="btn-primary" onclick="runBatch()">Run Batch Verification</button>
+    <div id="batch-result"></div>
+  </section>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

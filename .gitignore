@@ -1,0 +1,17 @@
+# Binary
+ttb-label-verifier
+
+# Go build cache
+/vendor/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Tesseract temp files
+/tmp/ttb-*.jpg
+
+# Fly.io secrets
+fly.toml

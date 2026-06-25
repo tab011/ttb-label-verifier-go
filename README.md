@@ -1,0 +1,198 @@
+# TTB Alcohol Label Verifier
+
+Automated compliance verification for TTB (Alcohol and Tobacco Tax and Trade Bureau)
+alcohol labels. Upload a label image, get a PASS / FAIL verdict with per-field
+breakdown in under one second — fully offline, no cloud API required.
+
+Built as a take-home prototype demonstrating how OCR + probabilistic sequence
+modeling can replace the 5–10 minute manual field-matching process currently used
+during label review.
+
+---
+
+## Quick start (local)
+
+### System dependencies
+
+**Fedora / RHEL:**
+```bash
+sudo dnf install opencv opencv-devel tesseract tesseract-langpack-eng golang
+```
+
+**Ubuntu / Debian:**
+```bash
+sudo apt-get install libopencv-dev tesseract-ocr tesseract-ocr-eng golang
+```
+
+**macOS (Homebrew):**
+```bash
+brew install opencv tesseract go
+```
+
+### Build and run
+
+```bash
+git clone https://github.com/YOUR_USERNAME/ttb-label-verifier-go
+cd ttb-label-verifier-go
+
+make setup          # installs Python deps, generates test data, trains models
+make run            # builds Go server and opens :8181
+```
+
+Open `http://localhost:8181`.
+
+### Optional: Ollama vision model (requires GPU)
+
+The server defaults to Tesseract OCR (~0.65 s/label). If you have an Nvidia GPU
+and Ollama installed, the vision-model path adds a higher-accuracy pass:
+
+```bash
+ollama pull moondream    # 1.8 GB primary
+ollama pull llava:7b     # 4.7 GB fallback
+make run-ollama
+```
+
+---
+
+## Architecture
+
+```
+Label image (upload or batch CSV)
+    │
+    ▼
+GoCV preprocessing
+  MSER region crop → grayscale → Gaussian blur → Otsu binarize → 2× cubic upscale
+    │
+    ▼
+Tesseract OCR  (--psm 4, raw bytes; Ollama vision optional via -ollama flag)
+    │
+    ▼
+CRF sequence tagger  (sklearn-crfsuite, BIO tags, learned weights)
+  B-BRAND  I-BRAND  B-TYPE  B-ABV  B-NET  B-WARN  I-WARN  B-MFR  O
+    │
+    ├── HMM tagger (Viterbi decoder + Forward likelihood score — fallback / comparison)
+    │
+    └── Markov chain brand scorer  (character bigram anomaly detection)
+    │
+    ▼
+Comparison engine  (27 CFR §§ 5.36, 5.121, 16.21)
+  brand_name     → Levenshtein ≥ 90 %
+  class_type     → fuzzy ≥ 85 %
+  abv_percent    → ±0.1 % float tolerance; BIB = exactly 50.0 %
+  net_contents   → fuzzy ≥ 85 %
+  government_warning → content ≥ 88 % AND ≥ 70 % uppercase letters (ALL CAPS required)
+    │
+    ▼
+PASS / FAIL verdict  +  per-field table  +  anomaly scores
+(JSON API → vanilla JS renders result; no framework dependencies)
+```
+
+---
+
+## What the models do
+
+### CRF tagger (primary field extractor)
+A Linear-Chain CRF trained with L-BFGS on 30 annotated synthetic labels. Unlike
+the hand-tuned HMM emission weights it replaces, the CRF learns weights across
+all overlapping features simultaneously: `is_allcaps`, `has_percent`,
+`has_bourbon_keyword`, `prev.has_volume`, `markov_bucket`, position rank, etc.
+
+BIO tagging handles multi-line entities — government warning continuation lines
+tag as `I-WARN` rather than falling through to `O`.
+
+### HMM tagger (structural anomaly detection)
+Runs in parallel with the CRF. The **Forward algorithm** sums over all possible
+state-path combinations to produce `log P(token_sequence | HMM)`. A very
+negative score (< −4.0 per token) means the label's token ordering does not
+match any known bourbon label structure — useful for detecting scans of non-label
+images, foreign-language labels, or fraudulent mock-ups.
+
+The **Viterbi decoder** provides a second field extraction path benchmarked
+against the CRF on each release.
+
+### Brand Markov chain (counterfeit / OCR noise detection)
+Character bigram model trained on TTB-registered bourbon brand names. Scores
+the extracted brand name against the transition matrix: scores near 0 indicate
+real bourbon naming patterns; very negative scores flag OCR garbage
+(`"BUFFAL0 TR4CE"`) or phonetic counterfeits (`"Elijah Crais"`).
+
+Threshold −3.5 triggers a ⚠ SUSPICIOUS annotation in the response JSON.
+
+---
+
+## API
+
+### `POST /verify`
+
+```
+Content-Type: multipart/form-data
+
+Fields:
+  image          (required)  Label image file
+  brand_name     (required)  Expected brand name from COLA registry
+  class_type     (required)  Expected class/type designation
+  abv_percent    (required)  Expected ABV as a decimal string ("45.0")
+  net_contents   (required)  Expected net contents ("750ml")
+```
+
+Response:
+```json
+{
+  "verdict": "PASS",
+  "fields": {
+    "brand_name":          { "status": "PASS", "extracted": "JIM BEAM", "expected": "JIM BEAM" },
+    "class_type":          { "status": "PASS", "extracted": "STRAIGHT BOURBON WHISKY", "expected": "STRAIGHT BOURBON WHISKY" },
+    "abv_percent":         { "status": "PASS", "extracted": "47.5", "expected": "47.5" },
+    "net_contents":        { "status": "PASS", "extracted": "750ml", "expected": "750ml" },
+    "government_warning":  { "status": "PASS", "extracted": "GOVERNMENT WARNING: ...", "expected": "..." }
+  },
+  "markov_score": -0.41,
+  "hmm_likelihood": 1.50,
+  "confidence": 0.4
+}
+```
+
+### `GET /health`
+Returns `{"status":"ok"}`.
+
+---
+
+## Regenerating test data
+
+```bash
+make regen-testdata   # 30 synthetic labels (20 PASS / 5 FAIL-warning / 5 FAIL-ABV)
+make train-markov     # rebuild brand_markov.json
+make train-crf        # retrain crf_model.pkl
+make benchmark        # compare CRF vs HMM field extraction accuracy
+```
+
+---
+
+## Deploying to Fly.io
+
+```bash
+fly launch --dockerfile Dockerfile --name ttb-label-verifier
+fly deploy
+```
+
+The app requires no secrets. The GoCV OpenCV dependency is bundled via the
+`gocv/opencv` base image in the Dockerfile.
+
+---
+
+## Compliance references
+
+- 27 CFR § 5.32 — mandatory label information (brand name, class/type, ABV, net contents)
+- 27 CFR § 5.36, § 5.121 — ABV ranges by class (BIB exactly 50 %; spirits 40–80 %)
+- 27 CFR § 16.21 — government warning text and mandatory ALL CAPS
+
+---
+
+## Development note
+
+This prototype was built with assistance from Claude Code (Anthropic). The
+probabilistic models (CRF, HMM, Markov chain) and the compliance rule engine
+were designed collaboratively; training data was generated from TTB-registered
+brand names. The architecture decision to use offline OCR + sequence modeling
+rather than a cloud vision API was driven by the government-firewall constraint
+identified in the requirements.
