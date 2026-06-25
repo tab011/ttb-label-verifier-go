@@ -180,6 +180,33 @@ The app requires no secrets. The GoCV OpenCV dependency is bundled via the
 
 ---
 
+## Architecture decisions
+
+### Label region detection
+The planned production approach was **MediaPipe TextDetector** — a lightweight,
+purpose-built text detection model that returns individual text bounding boxes
+directly from the image. Each bounding box would be fed to Tesseract independently,
+giving the OCR engine a clean, isolated text region rather than the full label at
+once. This is meaningfully better than OCR-on-the-whole-label because noise from
+decorative elements, background texture, and unrelated regions never reaches the
+OCR engine.
+
+MediaPipe was chosen over YOLOv8 (which was the original plan) because YOLO is a
+general object detector — it would find the bottle and infer the label location,
+but it doesn't specifically find text regions. MediaPipe's TextDetector is purpose-
+built for the task and considerably lighter.
+
+The prototype ships **GoCV MSER** (Maximally Stable Extremal Regions) instead —
+a purely geometric algorithm built into OpenCV that approximates text region
+detection with zero model weights. It works well on flat synthetic labels but
+degrades on real curved bottle photos where MediaPipe's learned detector would
+handle perspective and distortion correctly. MSER was chosen for the prototype
+because it has no external model dependency and keeps the binary fully offline.
+
+Production path: replace `internal/preprocess/preprocess.go` MSER crop with
+MediaPipe TextDetector output; the CRF tagger and compliance engine are
+detector-agnostic.
+
 ## Compliance references
 
 - 27 CFR § 5.32 — mandatory label information (brand name, class/type, ABV, net contents)
