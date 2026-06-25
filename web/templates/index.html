@@ -9,33 +9,69 @@
 <body>
   <header>
     <h1>TTB Alcohol Label Verification</h1>
-    <p class="subtitle">Automated compliance checking &mdash; 27 CFR §§ 5.32, 5.36, 5.121, 16.21 &mdash; fully offline.</p>
+    <p class="subtitle">Automated compliance checking &mdash; 27 CFR §§ 5.32, 5.36, 5.121, 16.21 &mdash; fully offline &mdash; Todd Baker</p>
   </header>
 
   <section class="pipeline-callout">
     <h2>How it works</h2>
     <p>
       Upload a label image and the expected field values from the COLA application.
-      The system extracts text via Tesseract OCR, runs a trained CRF sequence tagger
-      to identify each field (brand, class/type, ABV, net contents, government warning),
-      then checks each field against 27 CFR requirements.  A Markov chain flags anomalous
-      brand names; an HMM forward pass scores overall label structure.
-      Results return in under one second &mdash; no cloud API, no internet connection required.
+      Results return in <strong>under one second</strong> &mdash; no cloud API, no internet connection required.
+      Every model runs locally on pre-trained parameters. This matters: when a system takes
+      30&ndash;40 seconds per label, a human reviewing by eye is faster. Sub-second latency
+      is a hard requirement, not a nice-to-have.
     </p>
     <details>
       <summary>Pipeline diagram</summary>
       <pre class="pipeline-pre">
 Label image
-  → GoCV: MSER crop · Otsu binarize · 2× upscale
-  → Tesseract OCR  (--psm 4)
+  → GoCV: MSER region crop · Otsu binarize · 2× cubic upscale
+  → Tesseract OCR  (--psm 4, raw text lines)
   → CRF tagger     (BIO: B-BRAND I-BRAND B-TYPE B-ABV B-NET B-WARN I-WARN)
-  → HMM forward    (log-likelihood anomaly score)
-  → Markov chain   (character bigram brand plausibility)
-  → Comparison engine (fuzzy match · float tolerance · ALL-CAPS case check)
+      ├── HMM Forward pass  → log-likelihood structural anomaly score
+      └── Markov chain      → character bigram brand plausibility score
+  → Comparison engine (fuzzy · float tolerance · ALL-CAPS case check)
   → PASS / FAIL + per-field verdict JSON</pre>
     </details>
-    <p class="hint" style="margin-top:0.5rem">
-      <a href="https://github.com/tab011/ttb-label-verifier-go" target="_blank">Source code &amp; setup on GitHub</a>
+    <details style="margin-top:0.5rem">
+      <summary>CRF sequence tagger</summary>
+      <p class="pipeline-pre" style="white-space:normal;font-family:inherit;font-size:0.88rem;color:#cde">
+        A <strong>Linear-Chain Conditional Random Field</strong> assigns a BIO label to each line of OCR output.
+        Unlike a regex or a generative model, the CRF models P(labels | observations) directly,
+        conditioning on overlapping features simultaneously: all-caps flag, percent/volume patterns,
+        bourbon keyword presence, relative position on the label, and adjacent-line context.
+        Weights are learned by L-BFGS on 30 annotated labels drawn from the TTB COLA Public Registry corpus.
+        Benchmark accuracy: 100% on the 30-label test set.
+      </p>
+    </details>
+    <details style="margin-top:0.5rem">
+      <summary>HMM anomaly detector</summary>
+      <p class="pipeline-pre" style="white-space:normal;font-family:inherit;font-size:0.88rem;color:#cde">
+        A <strong>Hidden Markov Model</strong> runs two algorithms in parallel.
+        The <em>Viterbi decoder</em> finds the most likely field sequence &mdash; a second extraction path benchmarked against the CRF.
+        The <em>Forward algorithm</em> sums over all possible state paths to compute
+        log P(token sequence | HMM): a structural anomaly score.
+        A very negative score means the label token ordering matches no known bourbon label structure,
+        flagging non-label images, foreign labels, or fraudulent mock-ups without a separate classifier.
+      </p>
+    </details>
+    <details style="margin-top:0.5rem">
+      <summary>Brand Markov chain</summary>
+      <p class="pipeline-pre" style="white-space:normal;font-family:inherit;font-size:0.88rem;color:#cde">
+        A <strong>character bigram Markov chain</strong> trained on 609 unique brand names
+        from the TTB COLA Public Registry (1,004 whisky records, 2020&ndash;2026).
+        It learns the transition probability P(c&#8345; | c&#8345;&#8331;&#185;) for every character pair
+        appearing in a legitimately registered bourbon brand name.
+        At inference, the extracted brand name is scored against this matrix:
+        scores near 0 indicate real naming conventions;
+        scores below &minus;3.5 flag OCR noise or phonetically plausible counterfeits.
+      </p>
+    </details>
+    <p class="hint" style="margin-top:0.75rem">
+      <a href="https://github.com/tab011/ttb-label-verifier-go" target="_blank">Source code, scripts &amp; setup on GitHub</a>
+      &nbsp;&mdash;&nbsp;
+      <a href="/static/baker-ttb-technical-report.pdf" target="_blank">Technical report (PDF)</a>
+      &nbsp;&mdash;&nbsp;Todd Baker
     </p>
   </section>
 

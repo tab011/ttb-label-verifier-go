@@ -4,9 +4,9 @@ Automated compliance verification for TTB (Alcohol and Tobacco Tax and Trade Bur
 alcohol labels. Upload a label image, get a PASS / FAIL verdict with per-field
 breakdown in under one second — fully offline, no cloud API required.
 
-Built as a take-home prototype demonstrating how OCR + probabilistic sequence
-modeling can replace the 5–10 minute manual field-matching process currently used
-during label review.
+Built by **Todd Baker** as a take-home prototype demonstrating how OCR + probabilistic
+sequence modeling can replace the 5–10 minute manual field-matching process currently
+used during label review.
 
 ---
 
