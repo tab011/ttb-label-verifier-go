@@ -4,9 +4,11 @@ Automated compliance verification for TTB (Alcohol and Tobacco Tax and Trade Bur
 alcohol labels. Upload a label image, get a PASS / FAIL verdict with per-field
 breakdown in under one second — fully offline, no cloud API required.
 
-Built by **Todd Baker** as a take-home prototype demonstrating how OCR + probabilistic
-sequence modeling can replace the 5–10 minute manual field-matching process currently
-used during label review.
+Built by **Todd Baker** as a prototype for the U.S. Department of the Treasury,
+demonstrating how OCR + probabilistic sequence modeling can replace the 5–10 minute
+manual field-matching process currently used during label review.
+
+**[Live demo](https://ttb-label-verifier-go.fly.dev) &nbsp;·&nbsp; [Technical report (PDF)](https://ttb-label-verifier-go.fly.dev/static/baker-ttb-technical-report.pdf)**
 
 ---
 
@@ -32,7 +34,7 @@ brew install opencv tesseract go
 ### Build and run
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/ttb-label-verifier-go
+git clone https://github.com/tab011/ttb-label-verifier-go
 cd ttb-label-verifier-go
 
 make setup          # installs Python deps, generates test data, trains models
@@ -40,17 +42,6 @@ make run            # builds Go server and opens :8181
 ```
 
 Open `http://localhost:8181`.
-
-### Optional: Ollama vision model (requires GPU)
-
-The server defaults to Tesseract OCR (~0.65 s/label). If you have an Nvidia GPU
-and Ollama installed, the vision-model path adds a higher-accuracy pass:
-
-```bash
-ollama pull moondream    # 1.8 GB primary
-ollama pull llava:7b     # 4.7 GB fallback
-make run-ollama
-```
 
 ---
 
@@ -64,7 +55,7 @@ GoCV preprocessing
   MSER region crop → grayscale → Gaussian blur → Otsu binarize → 2× cubic upscale
     │
     ▼
-Tesseract OCR  (--psm 4, raw bytes; Ollama vision optional via -ollama flag)
+Tesseract OCR  (--psm 4, ~0.65 s/label)
     │
     ▼
 CRF sequence tagger  (sklearn-crfsuite, BIO tags, learned weights)
@@ -92,10 +83,11 @@ PASS / FAIL verdict  +  per-field table  +  anomaly scores
 ## What the models do
 
 ### CRF tagger (primary field extractor)
-A Linear-Chain CRF trained with L-BFGS on 30 annotated synthetic labels. Unlike
-the hand-tuned HMM emission weights it replaces, the CRF learns weights across
-all overlapping features simultaneously: `is_allcaps`, `has_percent`,
-`has_bourbon_keyword`, `prev.has_volume`, `markov_bucket`, position rank, etc.
+A Linear-Chain CRF trained with L-BFGS on 30 annotated synthetic labels derived
+from real TTB COLA registry records. Unlike the HMM (which uses hand-specified
+transition/emission parameters), the CRF learns weights across all overlapping
+features simultaneously: `is_allcaps`, `has_percent`, `has_bourbon_keyword`,
+`prev.has_volume`, `markov_bucket`, position rank, ±1 context window, etc.
 
 BIO tagging handles multi-line entities — government warning continuation lines
 tag as `I-WARN` rather than falling through to `O`.
@@ -111,10 +103,11 @@ The **Viterbi decoder** provides a second field extraction path benchmarked
 against the CRF on each release.
 
 ### Brand Markov chain (counterfeit / OCR noise detection)
-Character bigram model trained on TTB-registered bourbon brand names. Scores
-the extracted brand name against the transition matrix: scores near 0 indicate
-real bourbon naming patterns; very negative scores flag OCR garbage
-(`"BUFFAL0 TR4CE"`) or phonetic counterfeits (`"Elijah Crais"`).
+Character bigram model trained on 609 unique brand names from the TTB COLA
+Public Registry (1,004 whisky records, 2020–2026). Scores the extracted brand
+name against the transition matrix: scores near 0 indicate real bourbon naming
+patterns; very negative scores flag OCR noise (`"BUFFAL0 TR4CE"`) or phonetic
+counterfeits (`"Elijah Crais"`).
 
 Threshold −3.5 triggers a ⚠ SUSPICIOUS annotation in the response JSON.
 
