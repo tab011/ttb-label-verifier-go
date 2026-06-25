@@ -44,4 +44,4 @@ COPY testdata/brand_markov.json /app/testdata/brand_markov.json
 COPY testdata/crf_model.pkl     /app/testdata/crf_model.pkl
 
 EXPOSE 8181
-CMD ["/app/ttb-label-verifier", "-port", "8181"]
+CMD ["/app/ttb-label-verifier", "-addr", ":8181"]
