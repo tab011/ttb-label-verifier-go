@@ -1,10 +1,13 @@
 # ── Stage 1: build the Go binary ────────────────────────────────────────────
 FROM gocv/opencv:4.8.0 AS builder
 
-# The apt golang-go on Debian Bullseye is 1.15 — too old for go.mod go 1.22.
-# Install Go 1.22 from the official distribution.
+# gocv/opencv:4.8.0 already has a Go installation at /usr/local/go (circa 1.21).
+# Overwriting with tar -C /usr/local merges rather than replaces, leaving old
+# runtime files (msize.go) alongside new ones (msize_allocheaders.go) → redecl.
+# Remove first, then install Go 1.22.4 cleanly.
 RUN apt-get update && apt-get install -y --no-install-recommends wget ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /usr/local/go \
     && wget -q https://go.dev/dl/go1.22.4.linux-amd64.tar.gz \
     && tar -C /usr/local -xzf go1.22.4.linux-amd64.tar.gz \
     && rm go1.22.4.linux-amd64.tar.gz
