@@ -28,6 +28,29 @@ function previewImage(input) {
   reader.readAsDataURL(input.files[0]);
 }
 
+// Pre-fill the form with a known PASS example so reviewers can try immediately.
+// The image is fetched from /static/example_label.jpg served alongside the app.
+async function loadExample() {
+  document.getElementById('brand_name').value  = 'JIM BEAM';
+  document.getElementById('class_type').value  = 'STRAIGHT BOURBON WHISKY';
+  document.getElementById('abv_percent').value = '62.5';
+  document.getElementById('net_contents').value = '375ml';
+
+  // Fetch the example image and inject it into the file input via a DataTransfer
+  try {
+    const resp = await fetch('/static/example_label.jpg');
+    const blob = await resp.blob();
+    const file = new File([blob], 'example_label.jpg', { type: 'image/jpeg' });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    const input = document.getElementById('image-input');
+    input.files = dt.files;
+    previewImage(input);
+  } catch {
+    // If static file unavailable, form fields are still pre-filled
+  }
+}
+
 async function verifyLabel() {
   const image = document.getElementById('image-input').files[0];
   if (!image) { alert('Please upload a label image first.'); return; }

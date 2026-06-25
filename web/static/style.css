@@ -17,6 +17,44 @@ header {
 header h1 { font-size: 1.6rem; font-weight: 700; }
 header .subtitle { color: #a0a8c0; font-size: 0.9rem; margin-top: 0.25rem; }
 
+.pipeline-callout {
+  background: #fff;
+  border-left: 4px solid #2563eb;
+  padding: 1.25rem 2rem;
+  margin: 0;
+}
+.pipeline-callout h2 { font-size: 1rem; text-transform: uppercase; letter-spacing: 0.06em; color: #2563eb; margin-bottom: 0.5rem; }
+.pipeline-callout p { color: #444; font-size: 0.92rem; max-width: 820px; }
+.pipeline-callout details { margin-top: 0.75rem; }
+.pipeline-callout summary { cursor: pointer; font-size: 0.875rem; color: #2563eb; font-weight: 600; }
+.pipeline-pre {
+  background: #1a1a2e;
+  color: #a0d8af;
+  font-family: "Courier New", monospace;
+  font-size: 0.8rem;
+  padding: 1rem 1.25rem;
+  border-radius: 6px;
+  margin-top: 0.5rem;
+  white-space: pre;
+  overflow-x: auto;
+}
+.pipeline-callout a { color: #2563eb; font-size: 0.875rem; }
+
+.btn-secondary {
+  display: block;
+  background: #fff;
+  color: #2563eb;
+  border: 1.5px solid #2563eb;
+  padding: 0.55rem 1.2rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+  width: 100%;
+}
+.btn-secondary:hover { background: #f0f4ff; }
+
 .tabs {
   background: #fff;
   border-bottom: 2px solid #e0e4ef;

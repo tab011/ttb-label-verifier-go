@@ -9,8 +9,35 @@
 <body>
   <header>
     <h1>TTB Alcohol Label Verification</h1>
-    <p class="subtitle">Automated compliance checking &mdash; runs fully offline, no data leaves this machine.</p>
+    <p class="subtitle">Automated compliance checking &mdash; 27 CFR §§ 5.32, 5.36, 5.121, 16.21 &mdash; fully offline.</p>
   </header>
+
+  <section class="pipeline-callout">
+    <h2>How it works</h2>
+    <p>
+      Upload a label image and the expected field values from the COLA application.
+      The system extracts text via Tesseract OCR, runs a trained CRF sequence tagger
+      to identify each field (brand, class/type, ABV, net contents, government warning),
+      then checks each field against 27 CFR requirements.  A Markov chain flags anomalous
+      brand names; an HMM forward pass scores overall label structure.
+      Results return in under one second &mdash; no cloud API, no internet connection required.
+    </p>
+    <details>
+      <summary>Pipeline diagram</summary>
+      <pre class="pipeline-pre">
+Label image
+  → GoCV: MSER crop · Otsu binarize · 2× upscale
+  → Tesseract OCR  (--psm 4)
+  → CRF tagger     (BIO: B-BRAND I-BRAND B-TYPE B-ABV B-NET B-WARN I-WARN)
+  → HMM forward    (log-likelihood anomaly score)
+  → Markov chain   (character bigram brand plausibility)
+  → Comparison engine (fuzzy match · float tolerance · ALL-CAPS case check)
+  → PASS / FAIL + per-field verdict JSON</pre>
+    </details>
+    <p class="hint" style="margin-top:0.5rem">
+      <a href="https://github.com/your-username/ttb-label-verifier-go" target="_blank">Source code &amp; setup on GitHub</a>
+    </p>
+  </section>
 
   <nav class="tabs">
     <button class="tab-btn active" onclick="showTab('single', this)">Single Label</button>
@@ -54,6 +81,7 @@
           <label for="net_contents">Net Contents</label>
           <input type="text" id="net_contents" placeholder="e.g. 750 mL">
         </div>
+        <button class="btn-secondary" onclick="loadExample()" style="margin-bottom:0.5rem">Load example label</button>
         <button class="btn-primary" onclick="verifyLabel()">Verify Label</button>
       </div>
     </div>
