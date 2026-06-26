@@ -150,6 +150,10 @@ func handleVerify(w http.ResponseWriter, r *http.Request) {
 		preprocessed = imgBytes
 	}
 
+	// Visual classification runs before OCR — gives a category guess from
+	// bottle color, label darkness, and aspect ratio alone. Fast (~5ms).
+	spiritClass := agent.ClassifySpirit(imgBytes)
+
 	extracted, err := agent.ExtractFields(r.Context(), preprocessed, imgBytes)
 	if err != nil {
 		jsonError(w, fmt.Sprintf("extraction failed: %v", err), http.StatusInternalServerError)
@@ -157,6 +161,8 @@ func handleVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := compare.Verify(extracted, expected)
+	result.SpiritCategory = spiritClass.Category
+	result.SpiritConfidence = spiritClass.Confidence
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
 }

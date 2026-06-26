@@ -94,8 +94,13 @@ function renderResult(result, container) {
     ? `<div class="low-confidence">Low extraction confidence (${(result.confidence * 100).toFixed(0)}%) &mdash; review manually.</div>`
     : '';
 
+  const spiritBadge = result.spirit_category && result.spirit_category !== 'UNKNOWN'
+    ? `<div class="spirit-badge">Visual classification: <strong>${result.spirit_category}</strong> &nbsp;<span class="spirit-conf">${(result.spirit_confidence * 100).toFixed(0)}% confidence</span></div>`
+    : '';
+
   container.innerHTML = `
     <hr>
+    ${spiritBadge}
     ${lowConf}
     <div class="verdict ${verdictClass}">${result.verdict}</div>
     <p class="result-notes">${result.notes}</p>

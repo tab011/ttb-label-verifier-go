@@ -17,8 +17,10 @@ type FieldVerdict struct {
 }
 
 type ComplianceResult struct {
-	Verdict    string                  `json:"verdict"` // PASS or FAIL
-	Fields     map[string]FieldVerdict `json:"fields"`
-	Notes      string                  `json:"notes"`
-	Confidence float64                 `json:"confidence"`
+	Verdict          string                  `json:"verdict"` // PASS or FAIL
+	Fields           map[string]FieldVerdict `json:"fields"`
+	Notes            string                  `json:"notes"`
+	Confidence       float64                 `json:"confidence"`
+	SpiritCategory   string                  `json:"spirit_category,omitempty"`
+	SpiritConfidence float64                 `json:"spirit_confidence,omitempty"`
 }

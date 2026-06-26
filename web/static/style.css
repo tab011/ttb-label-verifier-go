@@ -178,6 +178,18 @@ tbody tr:last-child td { border-bottom: none; }
 .hint { color: #555; font-size: 0.9rem; margin-bottom: 1.5rem; }
 code { background: #f0f4ff; padding: 0.1em 0.35em; border-radius: 3px; font-size: 0.85em; }
 
+.spirit-badge {
+  background: #1a2540;
+  border: 1px solid #334;
+  border-radius: 6px;
+  padding: 0.5rem 0.85rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+  color: #aac;
+}
+.spirit-badge strong { color: #c8d8ff; }
+.spirit-conf { color: #668; font-size: 0.82rem; }
+
 @media (max-width: 700px) {
   .columns { grid-template-columns: 1fr; }
   .tab-pane { padding: 1rem; }
