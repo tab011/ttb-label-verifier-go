@@ -99,16 +99,21 @@ def crop_bottle(img_bytes: bytes, bb: dict, pad: int = 30) -> bytes:
 # ---------------------------------------------------------------------------
 
 def run_tesseract(img_bytes: bytes) -> str:
+    """Run Tesseract across multiple PSM modes; return the result with the most words."""
     import tempfile, os
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
         f.write(img_bytes)
         tmp = f.name
     try:
-        r = subprocess.run(
-            ["tesseract", tmp, "stdout", "--psm", "4"],
-            capture_output=True, text=True,
-        )
-        return r.stdout
+        best = ""
+        for psm in ("11", "6", "3", "4"):
+            r = subprocess.run(
+                ["tesseract", tmp, "stdout", "--psm", psm],
+                capture_output=True, text=True,
+            )
+            if len(r.stdout.split()) > len(best.split()):
+                best = r.stdout
+        return best
     finally:
         os.unlink(tmp)
 

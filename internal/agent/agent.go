@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -166,6 +167,14 @@ func tryOllama(ctx context.Context, model, b64Image string) (*models.LabelFields
 	return &fields, nil
 }
 
+// psmModes lists Tesseract page-segmentation modes to try in order.
+// PSM 11 (sparse text) finds any text anywhere in the image — best for real
+// bottle photos where brand, type, and ABV are scattered across the label in
+// different font sizes and orientations.
+// PSM 6 (uniform block) suits flat synthetic labels.
+// PSM 3 (auto) and PSM 4 (single column) are last-resort fallbacks.
+var psmModes = []string{"11", "6", "3", "4"}
+
 func tesseractExtract(imgBytes []byte) (*models.LabelFields, error) {
 	tmp, err := os.CreateTemp("", "ttb-*.jpg")
 	if err != nil {
@@ -177,25 +186,56 @@ func tesseractExtract(imgBytes []byte) (*models.LabelFields, error) {
 	}
 	tmp.Close()
 
-	out, err := exec.Command("tesseract", tmp.Name(), "stdout", "--psm", "4").Output()
-	if err != nil {
-		out, err = exec.Command("tesseract", tmp.Name(), "stdout").Output()
+	// Try each PSM mode; keep the result with the most words.
+	// Real bottle labels have scattered, multi-size text that PSM 11 handles
+	// far better than the single-column assumption of PSM 4.
+	bestText := ""
+	bestPSM := ""
+	for _, psm := range psmModes {
+		out, err := exec.Command("tesseract", tmp.Name(), "stdout", "--psm", psm).Output()
 		if err != nil {
-			return nil, fmt.Errorf("tesseract exec: %w", err)
+			continue
+		}
+		text := string(out)
+		if len(strings.Fields(text)) > len(strings.Fields(bestText)) {
+			bestText = text
+			bestPSM = psm
 		}
 	}
 
-	ocrText := string(out)
+	if bestText == "" {
+		return nil, fmt.Errorf("tesseract: no text found in any PSM mode")
+	}
+
+	wordCount := len(strings.Fields(bestText))
+	log.Printf("agent: Tesseract PSM=%s yielded %d words", bestPSM, wordCount)
 
 	// CRF sequence tagger — better field extraction than regex on real labels.
 	// Falls back to regex heuristics if the model or script is unavailable.
-	if fields, err := crfExtract(ocrText); err == nil {
+	if fields, err := crfExtract(bestText); err == nil {
+		// Confidence reflects actual OCR quality: more words = more confident.
+		fields.Confidence = ocrConfidence(wordCount, fields)
 		return fields, nil
 	} else {
 		log.Printf("agent: CRF unavailable (%v) — using regex fallback", err)
 	}
 
-	return extractFromText(ocrText), nil
+	fields := extractFromText(bestText)
+	fields.Confidence = ocrConfidence(wordCount, fields)
+	return fields, nil
+}
+
+// ocrConfidence returns a 0–1 confidence score based on how much text was
+// extracted and how many mandatory fields were populated.
+func ocrConfidence(wordCount int, f *models.LabelFields) float64 {
+	textScore := math.Min(1.0, float64(wordCount)/40.0) // 40 words = full confidence
+	fieldsFound := 0
+	if f.BrandName != "" { fieldsFound++ }
+	if f.ClassType != "" { fieldsFound++ }
+	if f.ABVPercent > 0  { fieldsFound++ }
+	if f.NetContents != "" { fieldsFound++ }
+	fieldScore := float64(fieldsFound) / 4.0
+	return math.Round((textScore*0.4+fieldScore*0.6)*100) / 100
 }
 
 // crfExtract pipes raw OCR text through the Python CRF tagger and returns
