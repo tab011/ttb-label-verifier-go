@@ -19,8 +19,6 @@ import (
 	"strings"
 	"time"
 
-	xdraw "golang.org/x/image/draw"
-
 	"ttb-label-verifier/internal/models"
 )
 
@@ -264,7 +262,14 @@ func resizeForOCR(imgBytes []byte, maxPx int) ([]byte, error) {
 	nw := int(float64(w) * scale)
 	nh := int(float64(h) * scale)
 	dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
-	xdraw.BiLinear.Scale(dst, dst.Bounds(), src, b, xdraw.Over, nil)
+	// Nearest-neighbour resize — fast, zero dependencies, fine for OCR input.
+	for y := 0; y < nh; y++ {
+		for x := 0; x < nw; x++ {
+			sx := b.Min.X + int(float64(x)/scale)
+			sy := b.Min.Y + int(float64(y)/scale)
+			dst.Set(x, y, src.At(sx, sy))
+		}
+	}
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 90}); err != nil {
 		return nil, err

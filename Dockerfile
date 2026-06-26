@@ -8,9 +8,9 @@ FROM gocv/opencv:4.8.0 AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends wget ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /usr/local/go \
-    && wget -q https://go.dev/dl/go1.22.4.linux-amd64.tar.gz \
-    && tar -C /usr/local -xzf go1.22.4.linux-amd64.tar.gz \
-    && rm go1.22.4.linux-amd64.tar.gz
+    && wget -q https://go.dev/dl/go1.25.11.linux-amd64.tar.gz \
+    && tar -C /usr/local -xzf go1.25.11.linux-amd64.tar.gz \
+    && rm go1.25.11.linux-amd64.tar.gz
 
 ENV PATH="/usr/local/go/bin:${PATH}"
 ENV GOPATH="/go"
