@@ -98,40 +98,55 @@ def crop_bottle(img_bytes: bytes, bb: dict, pad: int = 30) -> bytes:
 # OCR
 # ---------------------------------------------------------------------------
 
-_easyocr_reader = None
-
-def get_ocr_reader():
-    """Lazy-load EasyOCR reader (downloads model on first call, ~500MB)."""
-    global _easyocr_reader
-    if _easyocr_reader is None:
-        import easyocr
-        print("Loading EasyOCR model (first run may download ~500MB)...")
-        _easyocr_reader = easyocr.Reader(["en"], gpu=False)
-        print("EasyOCR ready.")
-    return _easyocr_reader
-
-
 def run_ocr(img_bytes: bytes) -> str:
     """
-    Run EasyOCR on the image.  EasyOCR is a deep-learning OCR designed for
-    natural scene text — it handles dark backgrounds, curved label text, and
-    mixed font sizes that defeat Tesseract (which is a document scanner).
+    Extract label text using Claude's vision API (claude-haiku-4-5-20251001).
 
-    Returns all detected text lines joined by newlines, sorted top-to-bottom
-    by bounding-box y-coordinate so the CRF sees them in label reading order.
+    Claude handles dark backgrounds, gold foil, curved surfaces, and mixed
+    fonts that defeat Tesseract.  For a one-time 141-image annotation run
+    the total API cost is ~$2–3.
+
+    Returns all visible label text, one line per text element, in reading
+    order (top-to-bottom, left-to-right).
+
+    Requires ANTHROPIC_API_KEY in the environment.
     """
-    reader = get_ocr_reader()
-    arr = np.frombuffer(img_bytes, np.uint8)
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    import anthropic, base64, os
 
-    results = reader.readtext(img, detail=1, paragraph=False)
-    if not results:
-        return ""
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "ANTHROPIC_API_KEY not set. "
+            "Export it or unlock via ~/.claude/bin/keepass-unlock."
+        )
 
-    # Sort by top-left y coordinate so brand (top) comes before ABV (bottom).
-    results.sort(key=lambda r: r[0][0][1])
-    lines = [text for (_bbox, text, _conf) in results if text.strip()]
-    return "\n".join(lines)
+    b64 = base64.standard_b64encode(img_bytes).decode()
+    client = anthropic.Anthropic(api_key=api_key)
+
+    msg = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=512,
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/jpeg", "data": b64},
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        "This is a cropped alcohol bottle label image. "
+                        "Read every piece of text visible on the label. "
+                        "Return only the raw text, one element per line, "
+                        "in top-to-bottom reading order. "
+                        "Do not add explanations, punctuation changes, or headings."
+                    ),
+                },
+            ],
+        }],
+    )
+    return msg.content[0].text.strip()
 
 
 # ---------------------------------------------------------------------------
