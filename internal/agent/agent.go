@@ -64,10 +64,15 @@ type ollamaResponse struct {
 // Enable with -ollama flag on the server for GPU deployments.
 var UseOllama bool
 
-// ExtractFields runs the extraction pipeline. When UseOllama is true it tries
-// moondream then llava:7b (preprocessed image) before falling back to Tesseract.
-// When UseOllama is false it goes straight to Tesseract (~1.5s on CPU).
-// Raw bytes are used for Tesseract because GoCV binarization degrades small text.
+// ExtractFields runs the three-tier extraction pipeline:
+//
+//	Tier 1 — Tesseract OCR + CRF sequence tagger (~0.5s, free)
+//	Tier 2 — if confidence < ClaudeFallbackThreshold, escalate to Claude Haiku
+//	          vision (~3s, ~$0.001/image); skipped if ANTHROPIC_API_KEY unset.
+//
+// Enterprise note: set ANTHROPIC_BASE_URL to route Tier 2 calls through an
+// internal proxy instead of api.anthropic.com (firewall blocks public endpoint;
+// VPN-connected officers reach the internal web app which calls the proxy).
 func ExtractFields(ctx context.Context, preprocessed, raw []byte) (*models.LabelFields, error) {
 	if UseOllama {
 		b64 := base64.StdEncoding.EncodeToString(preprocessed)
@@ -85,7 +90,29 @@ func ExtractFields(ctx context.Context, preprocessed, raw []byte) (*models.Label
 		}
 		log.Println("agent: all Ollama models failed — falling back to Tesseract")
 	}
-	return tesseractExtract(raw)
+
+	fields, err := tesseractExtract(raw)
+	if err != nil {
+		// Tesseract failed entirely — try Claude immediately if available.
+		if os.Getenv("ANTHROPIC_API_KEY") != "" {
+			log.Printf("agent: Tesseract failed (%v) — escalating to Claude Haiku", err)
+			return claudeExtract(ctx, raw)
+		}
+		return nil, err
+	}
+
+	// Tier 2: escalate to Claude Haiku if OCR confidence is low.
+	if fields.Confidence < ClaudeFallbackThreshold && os.Getenv("ANTHROPIC_API_KEY") != "" {
+		log.Printf("agent: Tesseract confidence %.2f < %.2f — escalating to Claude Haiku",
+			fields.Confidence, ClaudeFallbackThreshold)
+		if claudeFields, err := claudeExtract(ctx, raw); err == nil {
+			return claudeFields, nil
+		} else {
+			log.Printf("agent: Claude Haiku fallback failed (%v) — using Tesseract result", err)
+		}
+	}
+
+	return fields, nil
 }
 
 // availableOllamaModels returns a set of model name prefixes available locally.
