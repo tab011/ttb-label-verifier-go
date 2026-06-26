@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"image/color"
 	"image/jpeg"
 	_ "image/png"
 	"log"
@@ -170,53 +171,91 @@ func tryOllama(ctx context.Context, model, b64Image string) (*models.LabelFields
 	return &fields, nil
 }
 
+// labelKeywords are terms that appear on genuine alcohol labels.
+// Scoring by keyword count is more reliable than raw word count because
+// PSM 11 on a busy bottle photo picks up noise/reflections as "words."
+var labelKeywords = []string{
+	"WHISKEY", "WHISKY", "BOURBON", "DISTILLERY", "DISTILLED", "BOTTLED",
+	"STRAIGHT", "KENTUCKY", "TENNESSEE", "PROOF", "ALCOHOL", "GOVERNMENT",
+	"WARNING", "ALC", "VOL", "750", "1.75", "LITER", "LITRE",
+}
+
+// labelScore counts how many domain keywords appear in the OCR output.
+func labelScore(text string) int {
+	upper := strings.ToUpper(text)
+	n := 0
+	for _, kw := range labelKeywords {
+		if strings.Contains(upper, kw) {
+			n++
+		}
+	}
+	return n
+}
+
+// runTesseract calls tesseract on a temp file path with --oem 1 (LSTM only)
+// and the given PSM mode. Returns empty string on error.
+func runTesseract(path, psm string) string {
+	out, err := exec.Command("tesseract", path, "stdout", "--oem", "1", "--psm", psm).Output()
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
 func tesseractExtract(imgBytes []byte) (*models.LabelFields, error) {
-	// Resize to max 1500px on the longest side before OCR.
-	// Full phone photos (12 MP) take 3–5 s on any PSM mode; 1500 px takes ~0.4 s
-	// and Tesseract accuracy does not improve beyond ~300 DPI for label text.
-	resized, err := resizeForOCR(imgBytes, 1500)
+	// Decode and resize to max 1500px. Returns the decoded image for variant generation.
+	resized, src, err := resizeForOCR(imgBytes, 1500)
 	if err != nil {
 		log.Printf("agent: resize failed (%v), using original", err)
 		resized = imgBytes
+		src = nil
 	}
 
-	tmp, err := os.CreateTemp("", "ttb-*.jpg")
-	if err != nil {
-		return nil, fmt.Errorf("tmp file: %w", err)
+	// Generate image variants: original, grayscale, inverted-grayscale.
+	// Many bourbon bottles have dark labels with light text; inverting the
+	// grayscale turns white-on-dark into black-on-white which Tesseract reads
+	// far better than the original dark background.
+	type variant struct {
+		data []byte
+		label string
 	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(resized); err != nil {
-		return nil, fmt.Errorf("write tmp: %w", err)
+	variants := []variant{{nil, "orig"}, {nil, "gray"}, {nil, "inv"}}
+	variants[0].data = resized
+	if src != nil {
+		variants[1].data = toGray(src)
+		variants[2].data = invertGray(src)
 	}
-	tmp.Close()
 
-	// PSM 11 (sparse text) finds text anywhere in the image regardless of
-	// layout — best for real bottle photos where brand, class type, and ABV
-	// appear in different font sizes and are not column-aligned.
-	// Fall back to PSM 6 (uniform block) only if PSM 11 yields very little.
-	bestText := ""
-	bestPSM := ""
-	for _, psm := range []string{"11", "6"} {
-		out, err := exec.Command("tesseract", tmp.Name(), "stdout", "--psm", psm).Output()
+	// Try PSM 3 (auto layout) then PSM 11 (sparse) on each variant;
+	// keep the result with the highest domain-keyword score.
+	bestText, bestScore, bestDesc := "", -1, ""
+	for _, v := range variants {
+		if len(v.data) == 0 {
+			continue
+		}
+		tmp, err := os.CreateTemp("", "ttb-*.jpg")
 		if err != nil {
 			continue
 		}
-		text := string(out)
-		if len(strings.Fields(text)) > len(strings.Fields(bestText)) {
-			bestText = text
-			bestPSM = psm
+		tmpName := tmp.Name()
+		tmp.Write(v.data)
+		tmp.Close()
+
+		for _, psm := range []string{"3", "11"} {
+			text := runTesseract(tmpName, psm)
+			if score := labelScore(text); score > bestScore {
+				bestText, bestScore, bestDesc = text, score, v.label+"/psm"+psm
+			}
 		}
-		if len(strings.Fields(bestText)) >= 10 {
-			break // enough text found; skip remaining modes
-		}
+		os.Remove(tmpName)
 	}
 
 	if bestText == "" {
-		return nil, fmt.Errorf("tesseract: no text found")
+		return nil, fmt.Errorf("tesseract: no text found in any variant")
 	}
 
 	wordCount := len(strings.Fields(bestText))
-	log.Printf("agent: Tesseract PSM=%s yielded %d words", bestPSM, wordCount)
+	log.Printf("agent: best OCR variant=%s keywords=%d words=%d", bestDesc, bestScore, wordCount)
 
 	// CRF sequence tagger — better field extraction than regex on real labels.
 	// Falls back to regex heuristics if the model or script is unavailable.
@@ -247,34 +286,69 @@ func ocrConfidence(wordCount int, f *models.LabelFields) float64 {
 }
 
 // resizeForOCR downsizes imgBytes so the longest edge is at most maxPx.
-// Returns the original bytes unchanged if the image is already smaller.
-func resizeForOCR(imgBytes []byte, maxPx int) ([]byte, error) {
+// Returns (jpegBytes, decodedImage, error). The decoded image is returned so
+// callers can generate grayscale/inverted variants without decoding twice.
+func resizeForOCR(imgBytes []byte, maxPx int) ([]byte, image.Image, error) {
 	src, _, err := image.Decode(bytes.NewReader(imgBytes))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
+	var dst image.Image
 	if w <= maxPx && h <= maxPx {
-		return imgBytes, nil
-	}
-	scale := float64(maxPx) / float64(max(w, h))
-	nw := int(float64(w) * scale)
-	nh := int(float64(h) * scale)
-	dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
-	// Nearest-neighbour resize — fast, zero dependencies, fine for OCR input.
-	for y := 0; y < nh; y++ {
-		for x := 0; x < nw; x++ {
-			sx := b.Min.X + int(float64(x)/scale)
-			sy := b.Min.Y + int(float64(y)/scale)
-			dst.Set(x, y, src.At(sx, sy))
+		dst = src
+	} else {
+		scale := float64(maxPx) / float64(max(w, h))
+		nw := int(float64(w) * scale)
+		nh := int(float64(h) * scale)
+		d := image.NewRGBA(image.Rect(0, 0, nw, nh))
+		for y := 0; y < nh; y++ {
+			for x := 0; x < nw; x++ {
+				sx := b.Min.X + int(float64(x)/scale)
+				sy := b.Min.Y + int(float64(y)/scale)
+				d.Set(x, y, src.At(sx, sy))
+			}
 		}
+		dst = d
 	}
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 90}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return buf.Bytes(), nil
+	return buf.Bytes(), dst, nil
+}
+
+// toGray returns a JPEG-encoded grayscale version of the image.
+func toGray(src image.Image) []byte {
+	b := src.Bounds()
+	g := image.NewGray(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			g.Set(x, y, src.At(x, y))
+		}
+	}
+	var buf bytes.Buffer
+	jpeg.Encode(&buf, g, &jpeg.Options{Quality: 90})
+	return buf.Bytes()
+}
+
+// invertGray returns a JPEG-encoded inverted-grayscale image.
+// Bourbon labels often have white/gold text on dark backgrounds; inverting
+// converts that to black-on-white which Tesseract handles much better.
+func invertGray(src image.Image) []byte {
+	b := src.Bounds()
+	g := image.NewGray(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r, _, _, _ := src.At(x, y).RGBA()
+			lum := uint8(r >> 8)
+			g.SetGray(x, y, color.Gray{Y: 255 - lum})
+		}
+	}
+	var buf bytes.Buffer
+	jpeg.Encode(&buf, g, &jpeg.Options{Quality: 90})
+	return buf.Bytes()
 }
 
 func max(a, b int) int {
