@@ -98,24 +98,40 @@ def crop_bottle(img_bytes: bytes, bb: dict, pad: int = 30) -> bytes:
 # OCR
 # ---------------------------------------------------------------------------
 
-def run_tesseract(img_bytes: bytes) -> str:
-    """Run Tesseract across multiple PSM modes; return the result with the most words."""
-    import tempfile, os
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
-        f.write(img_bytes)
-        tmp = f.name
-    try:
-        best = ""
-        for psm in ("11", "6", "3", "4"):
-            r = subprocess.run(
-                ["tesseract", tmp, "stdout", "--psm", psm],
-                capture_output=True, text=True,
-            )
-            if len(r.stdout.split()) > len(best.split()):
-                best = r.stdout
-        return best
-    finally:
-        os.unlink(tmp)
+_easyocr_reader = None
+
+def get_ocr_reader():
+    """Lazy-load EasyOCR reader (downloads model on first call, ~500MB)."""
+    global _easyocr_reader
+    if _easyocr_reader is None:
+        import easyocr
+        print("Loading EasyOCR model (first run may download ~500MB)...")
+        _easyocr_reader = easyocr.Reader(["en"], gpu=False)
+        print("EasyOCR ready.")
+    return _easyocr_reader
+
+
+def run_ocr(img_bytes: bytes) -> str:
+    """
+    Run EasyOCR on the image.  EasyOCR is a deep-learning OCR designed for
+    natural scene text — it handles dark backgrounds, curved label text, and
+    mixed font sizes that defeat Tesseract (which is a document scanner).
+
+    Returns all detected text lines joined by newlines, sorted top-to-bottom
+    by bounding-box y-coordinate so the CRF sees them in label reading order.
+    """
+    reader = get_ocr_reader()
+    arr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+    results = reader.readtext(img, detail=1, paragraph=False)
+    if not results:
+        return ""
+
+    # Sort by top-left y coordinate so brand (top) comes before ABV (bottom).
+    results.sort(key=lambda r: r[0][0][1])
+    lines = [text for (_bbox, text, _conf) in results if text.strip()]
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +225,7 @@ def annotate(zip_path: Path, cola_path: Path, out_dir: Path):
             try:
                 img_bytes  = zf.read(img_key)
                 cropped    = crop_bottle(img_bytes, bb)
-                ocr_text   = run_tesseract(cropped)
+                ocr_text   = run_ocr(cropped)
             except Exception as e:
                 print(f"ERROR: {e}")
                 continue

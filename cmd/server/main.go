@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"ttb-label-verifier/internal/agent"
@@ -53,6 +54,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", handleIndex)
+	mux.HandleFunc("POST /extract", handleExtract) // image → fields (no comparison)
 	mux.HandleFunc("POST /verify", handleVerify)
 	mux.HandleFunc("POST /batch", handleBatch)
 	mux.HandleFunc("POST /import", handleImport)
@@ -165,6 +167,65 @@ func handleVerify(w http.ResponseWriter, r *http.Request) {
 	result.SpiritConfidence = spiritClass.Confidence
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
+}
+
+// handleExtract takes an image and returns extracted fields with no comparison.
+// The frontend uses this to auto-populate form fields when an image is uploaded.
+func handleExtract(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		jsonError(w, "invalid form data", http.StatusBadRequest)
+		return
+	}
+	file, _, err := r.FormFile("image")
+	if err != nil {
+		jsonError(w, "no image", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+	imgBytes, err := io.ReadAll(file)
+	if err != nil {
+		jsonError(w, "read error", http.StatusInternalServerError)
+		return
+	}
+
+	preprocessed, _ := preprocess.ProcessLabel(imgBytes)
+	if preprocessed == nil {
+		preprocessed = imgBytes
+	}
+
+	spiritClass := agent.ClassifySpirit(imgBytes)
+	extracted, err := agent.ExtractFields(r.Context(), preprocessed, imgBytes)
+	if err != nil {
+		jsonError(w, fmt.Sprintf("extraction failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Try to fill blank fields from COLA registry using the extracted brand name.
+	if rec, ok := colaDB.Lookup(extracted.BrandName); ok {
+		if extracted.ClassType == "" {
+			extracted.ClassType = rec.ClassType
+		}
+		if extracted.ABVPercent == 0 {
+			if v, err := strconv.ParseFloat(rec.ABVPercent, 64); err == nil {
+				extracted.ABVPercent = v
+			}
+		}
+		if extracted.NetContents == "" {
+			extracted.NetContents = rec.NetContents
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"brand_name":         extracted.BrandName,
+		"class_type":         extracted.ClassType,
+		"abv_percent":        extracted.ABVPercent,
+		"net_contents":       extracted.NetContents,
+		"government_warning": extracted.GovernmentWarning,
+		"confidence":         extracted.Confidence,
+		"spirit_category":    spiritClass.Category,
+		"spirit_confidence":  spiritClass.Confidence,
+	})
 }
 
 func handleBatch(w http.ResponseWriter, r *http.Request) {

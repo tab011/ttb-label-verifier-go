@@ -26,6 +26,45 @@ function previewImage(input) {
     placeholder.style.display = 'none';
   };
   reader.readAsDataURL(input.files[0]);
+  autoPopulateFields(input.files[0]);
+}
+
+// autoPopulateFields sends the image to /extract and fills in the form fields.
+// The user can then correct anything before clicking Verify.
+async function autoPopulateFields(file) {
+  const resultDiv = document.getElementById('result');
+  resultDiv.innerHTML = '<p class="spinner">Reading label&hellip;</p>';
+
+  try {
+    const { blob } = await prepareImageForUpload(file);
+    const fd = new FormData();
+    fd.append('image', blob, file.name);
+
+    const resp = await fetch('/extract', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (data.error) { resultDiv.innerHTML = ''; return; }
+
+    // Populate form fields with extracted values (don't overwrite if already filled)
+    const fields = ['brand_name', 'class_type', 'abv_percent', 'net_contents'];
+    let filled = 0;
+    for (const f of fields) {
+      const el = document.getElementById(f);
+      const val = f === 'abv_percent'
+        ? (data[f] > 0 ? String(data[f]) : '')
+        : (data[f] || '');
+      if (val) { el.value = val; filled++; }
+    }
+
+    const conf = Math.round((data.confidence || 0) * 100);
+    const cat = data.spirit_category && data.spirit_category !== 'UNKNOWN'
+      ? ` &nbsp;·&nbsp; <strong>${data.spirit_category}</strong>`
+      : '';
+    resultDiv.innerHTML = filled > 0
+      ? `<p class="extract-hint">Fields auto-populated from image (${conf}% confidence)${cat} &mdash; correct anything that looks wrong, then click <strong>Verify Label</strong>.</p>`
+      : `<p class="extract-hint low">Could not read label text. Fill in the fields manually and click <strong>Verify Label</strong>.</p>`;
+  } catch {
+    resultDiv.innerHTML = '';
+  }
 }
 
 // Pre-fill the form with a known PASS example so reviewers can try immediately.
