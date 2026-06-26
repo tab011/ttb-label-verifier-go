@@ -1,0 +1,11 @@
+[Unit]
+Description=eCFR regulatory sync for TTB label verifier
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/ttb-label-verifier/scripts/ecfr_sync.py
+WorkingDirectory=/opt/ttb-label-verifier
+StandardOutput=journal
+StandardError=journal
