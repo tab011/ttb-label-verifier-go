@@ -51,19 +51,88 @@ async function loadExample() {
   }
 }
 
+// prepareImageForUpload resizes the image to max 1500px on the longest side
+// and converts it to grayscale with contrast stretching. If the label region
+// is predominantly dark (white text on dark background — common on bourbon
+// bottles), it inverts the image so Tesseract reads light text on white.
+// Returns a Blob ready to append to FormData.
+async function prepareImageForUpload(file) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const MAX = 1500;
+      let w = img.width, h = img.height;
+      if (w > MAX || h > MAX) {
+        const scale = MAX / Math.max(w, h);
+        w = Math.round(w * scale);
+        h = Math.round(h * scale);
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+
+      const imageData = ctx.getImageData(0, 0, w, h);
+      const d = imageData.data;
+
+      // Convert to grayscale + contrast stretch
+      const gray = new Uint8Array(w * h);
+      for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+        gray[p] = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+      }
+
+      // Measure average brightness of the center label region (middle 50% of image)
+      let sum = 0, count = 0;
+      const cx0 = Math.round(w * 0.25), cx1 = Math.round(w * 0.75);
+      const cy0 = Math.round(h * 0.20), cy1 = Math.round(h * 0.80);
+      for (let y = cy0; y < cy1; y++) {
+        for (let x = cx0; x < cx1; x++) {
+          sum += gray[y * w + x];
+          count++;
+        }
+      }
+      const avgBrightness = count > 0 ? sum / count : 128;
+
+      // Dark label (avg < 110): invert so Tesseract sees black text on white.
+      // Bourbon labels are almost always dark background with light text.
+      const invert = avgBrightness < 110;
+
+      // Write back grayscale (inverted if needed) with mild contrast boost
+      for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+        let v = gray[p];
+        if (invert) v = 255 - v;
+        // Contrast: stretch toward extremes (mid-point ±40%)
+        v = Math.min(255, Math.max(0, Math.round((v - 128) * 1.4 + 128)));
+        d[i] = d[i + 1] = d[i + 2] = v;
+        d[i + 3] = 255;
+      }
+      ctx.putImageData(imageData, 0, 0);
+
+      canvas.toBlob(blob => resolve({ blob, invert, avgBrightness }), 'image/jpeg', 0.92);
+    };
+    img.src = URL.createObjectURL(file);
+  });
+}
+
 async function verifyLabel() {
   const image = document.getElementById('image-input').files[0];
   if (!image) { alert('Please upload a label image first.'); return; }
 
+  const resultDiv = document.getElementById('result');
+  resultDiv.innerHTML = '<p class="spinner">Preprocessing image&hellip;</p>';
+
+  const { blob, invert, avgBrightness } = await prepareImageForUpload(image);
+
+  resultDiv.innerHTML = `<p class="spinner">Verifying&hellip; ${invert ? '(inverted dark label)' : '(light label)'}</p>`;
+
   const fd = new FormData();
-  fd.append('image', image);
+  fd.append('image', blob, image.name);
   fd.append('brand_name', document.getElementById('brand_name').value);
   fd.append('class_type', document.getElementById('class_type').value);
   fd.append('abv_percent', document.getElementById('abv_percent').value);
   fd.append('net_contents', document.getElementById('net_contents').value);
-
-  const resultDiv = document.getElementById('result');
-  resultDiv.innerHTML = '<p class="spinner">Processing&hellip;</p>';
 
   try {
     const resp = await fetch('/verify', { method: 'POST', body: fd });
