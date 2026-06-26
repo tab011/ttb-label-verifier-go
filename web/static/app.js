@@ -178,3 +178,67 @@ function download(content, filename, mime) {
   a.click();
   URL.revokeObjectURL(a.href);
 }
+
+// ── Camera capture ──────────────────────────────────────────────────────────
+
+let cameraStream = null;
+
+async function toggleCamera(e) {
+  e.preventDefault();
+  const panel = document.getElementById('camera-panel');
+  const video = document.getElementById('camera-video');
+
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(t => t.stop());
+    cameraStream = null;
+    panel.style.display = 'none';
+    e.target.textContent = 'Use Camera';
+    return;
+  }
+
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    video.srcObject = cameraStream;
+    panel.style.display = 'block';
+    e.target.textContent = 'Close Camera';
+  } catch (err) {
+    alert('Camera access denied or unavailable: ' + err.message);
+  }
+}
+
+function captureFrame() {
+  const video  = document.getElementById('camera-video');
+  const canvas = document.getElementById('camera-canvas');
+  canvas.width  = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+
+  canvas.toBlob(blob => {
+    const file = new File([blob], 'camera_capture.jpg', { type: 'image/jpeg' });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    const input = document.getElementById('image-input');
+    input.files = dt.files;
+    previewImage(input);
+
+    // Stop camera after capture
+    if (cameraStream) {
+      cameraStream.getTracks().forEach(t => t.stop());
+      cameraStream = null;
+    }
+    document.getElementById('camera-panel').style.display = 'none';
+    document.querySelector('button[onclick^="toggleCamera"]').textContent = 'Use Camera';
+  }, 'image/jpeg', 0.92);
+}
+
+// ── Batch annotation template ───────────────────────────────────────────────
+
+function downloadTemplate() {
+  const csv = [
+    'filename,brand_name,class_type,abv_percent,net_contents',
+    'label_001.jpg,MAKER\'S MARK,STRAIGHT BOURBON WHISKY,45.0,750 mL',
+    'label_002.jpg,BUFFALO TRACE,KENTUCKY STRAIGHT BOURBON WHISKY,40.0,1750 mL',
+    'label_003.jpg,WILD TURKEY 101,STRAIGHT BOURBON WHISKY,50.5,750 mL',
+  ].join('\n');
+  download(csv, 'ttb_annotation_template.csv', 'text/csv');
+}

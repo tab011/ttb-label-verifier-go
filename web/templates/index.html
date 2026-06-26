@@ -98,6 +98,12 @@ Label image
           </div>
           <img id="preview" alt="Label preview" style="display:none">
         </label>
+        <button class="btn-secondary" onclick="toggleCamera(event)" style="margin-top:0.5rem;width:100%">Use Camera</button>
+        <div id="camera-panel" style="display:none;margin-top:0.5rem">
+          <video id="camera-video" autoplay playsinline style="width:100%;border-radius:6px;background:#000"></video>
+          <button class="btn-primary" onclick="captureFrame()" style="margin-top:0.4rem;width:100%">Capture</button>
+          <canvas id="camera-canvas" style="display:none"></canvas>
+        </div>
       </div>
 
       <div class="col">
@@ -129,7 +135,8 @@ Label image
   <!-- Batch -->
   <section id="batch" class="tab-pane" style="display:none">
     <h2>Batch Review</h2>
-    <p class="hint">Upload a CSV with columns: <code>filename, brand_name, class_type, abv_percent, net_contents</code> — then upload the matching label images.</p>
+    <p class="hint">Upload a CSV with columns: <code>filename, brand_name, class_type, abv_percent, net_contents</code> — then upload the matching label images. The filename must match the image filename exactly.</p>
+    <button class="btn-secondary" onclick="downloadTemplate()" style="margin-bottom:1rem">Download blank template CSV</button>
     <div class="form-group">
       <label for="batch-csv">Expected Fields CSV</label>
       <input type="file" id="batch-csv" accept=".csv">

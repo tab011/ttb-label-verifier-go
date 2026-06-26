@@ -40,6 +40,7 @@ WORKDIR /app
 COPY --from=builder /ttb-label-verifier /app/ttb-label-verifier
 COPY prompts/       /app/prompts/
 COPY web/           /app/web/
+COPY scripts/       /app/scripts/
 COPY testdata/brand_markov.json /app/testdata/brand_markov.json
 COPY testdata/crf_model.pkl     /app/testdata/crf_model.pkl
 

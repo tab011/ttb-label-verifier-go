@@ -393,6 +393,7 @@ def main():
     ap.add_argument("--train",     action="store_true", help="Train CRF from testdata labels")
     ap.add_argument("--image",     help="Tag a single image with the trained CRF")
     ap.add_argument("--benchmark", action="store_true", help="Compare CRF vs HMM accuracy")
+    ap.add_argument("--extract",   action="store_true", help="Read OCR text from stdin, print extracted fields as JSON")
     args = ap.parse_args()
 
     if args.train:
@@ -433,6 +434,15 @@ def main():
         for k, v in fields.items():
             if v:
                 print(f"  {k:<22} {v[:70]}")
+
+    elif args.extract:
+        if not MODEL_PATH.exists():
+            json.dump({"error": "model not found – run --train first"}, sys.stdout)
+            sys.exit(1)
+        ocr_text = sys.stdin.read()
+        tagger = LabelCRF.load()
+        fields = tagger.decode(ocr_text)
+        json.dump(fields, sys.stdout)
 
     else:
         ap.print_help()

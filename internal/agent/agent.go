@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -166,9 +167,6 @@ func tryOllama(ctx context.Context, model, b64Image string) (*models.LabelFields
 }
 
 func tesseractExtract(imgBytes []byte) (*models.LabelFields, error) {
-	// Use the tesseract CLI rather than Gosseract's C API because Gosseract's
-	// SetImageFromBytes uses a fixed 70-DPI assumption and clips the top of
-	// the image (missing brand names). The CLI reads JPEG metadata directly.
 	tmp, err := os.CreateTemp("", "ttb-*.jpg")
 	if err != nil {
 		return nil, fmt.Errorf("tmp file: %w", err)
@@ -181,12 +179,70 @@ func tesseractExtract(imgBytes []byte) (*models.LabelFields, error) {
 
 	out, err := exec.Command("tesseract", tmp.Name(), "stdout", "--psm", "4").Output()
 	if err != nil {
-		// Try without PSM override on older Tesseract versions
 		out, err = exec.Command("tesseract", tmp.Name(), "stdout").Output()
 		if err != nil {
 			return nil, fmt.Errorf("tesseract exec: %w", err)
 		}
 	}
 
-	return extractFromText(string(out)), nil
+	ocrText := string(out)
+
+	// CRF sequence tagger — better field extraction than regex on real labels.
+	// Falls back to regex heuristics if the model or script is unavailable.
+	if fields, err := crfExtract(ocrText); err == nil {
+		return fields, nil
+	} else {
+		log.Printf("agent: CRF unavailable (%v) — using regex fallback", err)
+	}
+
+	return extractFromText(ocrText), nil
+}
+
+// crfExtract pipes raw OCR text through the Python CRF tagger and returns
+// extracted label fields as a LabelFields struct.
+func crfExtract(ocrText string) (*models.LabelFields, error) {
+	cmd := exec.Command("python3", "/app/scripts/crf_tagger.py", "--extract")
+	cmd.Stdin = strings.NewReader(ocrText)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("crf exec: %w", err)
+	}
+
+	var raw struct {
+		BrandName         string `json:"brand_name"`
+		ClassType         string `json:"class_type"`
+		ABVPercent        string `json:"abv_percent"`
+		NetContents       string `json:"net_contents"`
+		GovernmentWarning string `json:"government_warning"`
+		Error             string `json:"error"`
+	}
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, fmt.Errorf("crf json: %w", err)
+	}
+	if raw.Error != "" {
+		return nil, fmt.Errorf("crf: %s", raw.Error)
+	}
+	if raw.BrandName == "" && raw.ClassType == "" {
+		return nil, fmt.Errorf("crf: no fields extracted")
+	}
+
+	// The CRF returns the full ABV line ("43.0% Alc./Vol.") — extract the number.
+	abv := 0.0
+	for _, re := range reABV {
+		if m := re.FindStringSubmatch(raw.ABVPercent); m != nil {
+			if v, err := strconv.ParseFloat(m[1], 64); err == nil {
+				abv = v
+				break
+			}
+		}
+	}
+
+	return &models.LabelFields{
+		BrandName:         raw.BrandName,
+		ClassType:         raw.ClassType,
+		ABVPercent:        abv,
+		NetContents:       raw.NetContents,
+		GovernmentWarning: raw.GovernmentWarning,
+		Confidence:        0.75,
+	}, nil
 }
