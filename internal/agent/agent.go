@@ -6,6 +6,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/jpeg"
+	_ "image/png"
 	"log"
 	"math"
 	"net/http"
@@ -15,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	xdraw "golang.org/x/image/draw"
 
 	"ttb-label-verifier/internal/models"
 )
@@ -167,31 +172,33 @@ func tryOllama(ctx context.Context, model, b64Image string) (*models.LabelFields
 	return &fields, nil
 }
 
-// psmModes lists Tesseract page-segmentation modes to try in order.
-// PSM 11 (sparse text) finds any text anywhere in the image — best for real
-// bottle photos where brand, type, and ABV are scattered across the label in
-// different font sizes and orientations.
-// PSM 6 (uniform block) suits flat synthetic labels.
-// PSM 3 (auto) and PSM 4 (single column) are last-resort fallbacks.
-var psmModes = []string{"11", "6", "3", "4"}
-
 func tesseractExtract(imgBytes []byte) (*models.LabelFields, error) {
+	// Resize to max 1500px on the longest side before OCR.
+	// Full phone photos (12 MP) take 3–5 s on any PSM mode; 1500 px takes ~0.4 s
+	// and Tesseract accuracy does not improve beyond ~300 DPI for label text.
+	resized, err := resizeForOCR(imgBytes, 1500)
+	if err != nil {
+		log.Printf("agent: resize failed (%v), using original", err)
+		resized = imgBytes
+	}
+
 	tmp, err := os.CreateTemp("", "ttb-*.jpg")
 	if err != nil {
 		return nil, fmt.Errorf("tmp file: %w", err)
 	}
 	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(imgBytes); err != nil {
+	if _, err := tmp.Write(resized); err != nil {
 		return nil, fmt.Errorf("write tmp: %w", err)
 	}
 	tmp.Close()
 
-	// Try each PSM mode; keep the result with the most words.
-	// Real bottle labels have scattered, multi-size text that PSM 11 handles
-	// far better than the single-column assumption of PSM 4.
+	// PSM 11 (sparse text) finds text anywhere in the image regardless of
+	// layout — best for real bottle photos where brand, class type, and ABV
+	// appear in different font sizes and are not column-aligned.
+	// Fall back to PSM 6 (uniform block) only if PSM 11 yields very little.
 	bestText := ""
 	bestPSM := ""
-	for _, psm := range psmModes {
+	for _, psm := range []string{"11", "6"} {
 		out, err := exec.Command("tesseract", tmp.Name(), "stdout", "--psm", psm).Output()
 		if err != nil {
 			continue
@@ -201,10 +208,13 @@ func tesseractExtract(imgBytes []byte) (*models.LabelFields, error) {
 			bestText = text
 			bestPSM = psm
 		}
+		if len(strings.Fields(bestText)) >= 10 {
+			break // enough text found; skip remaining modes
+		}
 	}
 
 	if bestText == "" {
-		return nil, fmt.Errorf("tesseract: no text found in any PSM mode")
+		return nil, fmt.Errorf("tesseract: no text found")
 	}
 
 	wordCount := len(strings.Fields(bestText))
@@ -236,6 +246,37 @@ func ocrConfidence(wordCount int, f *models.LabelFields) float64 {
 	if f.NetContents != "" { fieldsFound++ }
 	fieldScore := float64(fieldsFound) / 4.0
 	return math.Round((textScore*0.4+fieldScore*0.6)*100) / 100
+}
+
+// resizeForOCR downsizes imgBytes so the longest edge is at most maxPx.
+// Returns the original bytes unchanged if the image is already smaller.
+func resizeForOCR(imgBytes []byte, maxPx int) ([]byte, error) {
+	src, _, err := image.Decode(bytes.NewReader(imgBytes))
+	if err != nil {
+		return nil, err
+	}
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= maxPx && h <= maxPx {
+		return imgBytes, nil
+	}
+	scale := float64(maxPx) / float64(max(w, h))
+	nw := int(float64(w) * scale)
+	nh := int(float64(h) * scale)
+	dst := image.NewRGBA(image.Rect(0, 0, nw, nh))
+	xdraw.BiLinear.Scale(dst, dst.Bounds(), src, b, xdraw.Over, nil)
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 90}); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // crfExtract pipes raw OCR text through the Python CRF tagger and returns
