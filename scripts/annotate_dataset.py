@@ -6,13 +6,15 @@ Workflow per image:
   1. Read Pascal VOC XML bounding box → crop bottle from full photo
   2. Preprocess: grayscale → Otsu binarize → 2× upscale
   3. Tesseract OCR on crop
-  4. CRF sequence tagger extracts candidate fields
-  5. Fuzzy-match brand name against COLA registry → fill missing fields
-  6. Write to annotation CSV; flag rows needing human review
+  4. HMM Forward pass → structural gate (very negative score = skip)
+  5. CRF sequence tagger + HMM Viterbi → dual field extraction
+  6. Where CRF and HMM agree → high confidence; disagree → needs_review
+  7. Fuzzy-match brand name against COLA registry → fill missing fields
+  8. Write to annotation CSV; flag rows needing human review
 
 Output:
   dataset/annotations.csv         — all auto-annotated rows
-  dataset/needs_review.csv        — rows below confidence threshold
+  dataset/needs_review.csv        — rows below confidence threshold or CRF/HMM disagree
 
 Usage:
     python3 scripts/annotate_dataset.py --zip ~/Downloads/archive.zip \
@@ -38,6 +40,15 @@ import numpy as np
 from rapidfuzz import fuzz, process
 
 ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from hmm_tagger import LabelHMM
+
+_hmm = LabelHMM()
+
+# Structural gate: per-token log-likelihood below this → image is not a
+# recognisable bourbon label and should be excluded from training.
+HMM_GATE = -4.0
 
 # ---------------------------------------------------------------------------
 # Bottle crop from Pascal VOC XML
@@ -191,49 +202,83 @@ def annotate(zip_path: Path, cola_path: Path, out_dir: Path):
             print(f"  {bb['filename']} ...", end=" ", flush=True)
 
             try:
-                img_bytes    = zf.read(img_key)
-                cropped      = crop_bottle(img_bytes, bb)
-                ocr_text     = run_tesseract(cropped)
-                crf_fields   = crf_extract(ocr_text)
+                img_bytes  = zf.read(img_key)
+                cropped    = crop_bottle(img_bytes, bb)
+                ocr_text   = run_tesseract(cropped)
             except Exception as e:
                 print(f"ERROR: {e}")
                 continue
 
-            brand_candidate = crf_fields.get("brand_name", "").strip()
+            # ── HMM structural gate ──────────────────────────────────────────
+            hmm_score = _hmm.likelihood_score(ocr_text)
+            if hmm_score < HMM_GATE:
+                print(f"SKIP (hmm_score={hmm_score:.2f} < {HMM_GATE}) — not a recognisable label")
+                continue
+
+            # ── Dual extraction: CRF + HMM Viterbi ──────────────────────────
+            crf_fields = crf_extract(ocr_text)
+            hmm_fields = _hmm.decode(ocr_text)
+
+            crf_brand = crf_fields.get("brand_name", "").strip()
+            hmm_brand = hmm_fields.get("brand_name", "").strip()
+            crf_type  = crf_fields.get("class_type",  "").strip()
+            hmm_type  = hmm_fields.get("class_type",  "").strip()
+
+            # Agreement score between CRF and HMM on the two primary fields
+            brand_agree = fuzz.token_sort_ratio(crf_brand.upper(), hmm_brand.upper()) if (crf_brand and hmm_brand) else 0
+            type_agree  = fuzz.token_sort_ratio(crf_type.upper(),  hmm_type.upper())  if (crf_type  and hmm_type)  else 0
+            agree_score = (brand_agree + type_agree) / 2
+
+            # Pick brand/type: prefer whichever extractor is more confident,
+            # using COLA registry as tiebreaker
+            brand_candidate = crf_brand or hmm_brand
+            class_candidate = crf_type  or hmm_type
+
             cola_rec, cola_score = cola_lookup(brand_candidate, cola)
 
-            # Merge CRF output with COLA fill-in
             brand_name   = brand_candidate or (cola_rec["brand_name"]  if cola_rec else "")
-            class_type   = crf_fields.get("class_type", "").strip() or (cola_rec.get("class_type", "") if cola_rec else "")
-            abv_raw      = crf_fields.get("abv_percent", "").strip()
-            abv_percent  = parse_abv(abv_raw) if abv_raw else (cola_rec.get("abv_percent", "") if cola_rec else "")
-            net_contents = crf_fields.get("net_contents", "").strip() or (cola_rec.get("net_contents", "") if cola_rec else "")
+            class_type   = class_candidate or (cola_rec.get("class_type",   "") if cola_rec else "")
+            abv_raw      = crf_fields.get("abv_percent", "").strip() or hmm_fields.get("abv_percent", "").strip()
+            abv_percent  = parse_abv(abv_raw) if abv_raw else (cola_rec.get("abv_percent",  "") if cola_rec else "")
+            net_contents = (crf_fields.get("net_contents", "").strip()
+                            or hmm_fields.get("net_contents", "").strip()
+                            or (cola_rec.get("net_contents", "") if cola_rec else ""))
             gov_warning  = crf_fields.get("government_warning", "").strip()
 
-            # Confidence: COLA match score + whether CRF extracted something
-            crf_ok  = bool(brand_candidate and class_type)
-            confidence = round((cola_score * 0.6 + (40 if crf_ok else 0)) / 100, 2)
-            needs_review = confidence < 0.55 or not brand_name
+            # Confidence: COLA match + CRF/HMM agreement + HMM structural score
+            hmm_norm     = max(0.0, min(1.0, (hmm_score - HMM_GATE) / abs(HMM_GATE)))
+            confidence   = round(
+                cola_score  * 0.40 +
+                agree_score * 0.40 +
+                hmm_norm    * 20.0          # 0-20 pts from structural quality
+            ) / 100
+            confidence   = min(1.0, confidence)
+
+            disagreement = agree_score < 60 and bool(crf_brand and hmm_brand)
+            needs_review = confidence < 0.55 or not brand_name or disagreement
 
             row = {
-                "filename":          bb["filename"],
-                "brand_name":        brand_name,
-                "class_type":        class_type,
-                "abv_percent":       abv_percent,
-                "net_contents":      net_contents,
+                "filename":           bb["filename"],
+                "brand_name":         brand_name,
+                "class_type":         class_type,
+                "abv_percent":        abv_percent,
+                "net_contents":       net_contents,
                 "government_warning": gov_warning,
-                "cola_match_score":  cola_score,
-                "confidence":        confidence,
-                "needs_review":      "YES" if needs_review else "no",
-                "ocr_raw":           ocr_text[:200].replace("\n", " | "),
+                "cola_match_score":   cola_score,
+                "hmm_score":          round(hmm_score, 3),
+                "crf_hmm_agree":      round(agree_score, 1),
+                "confidence":         confidence,
+                "needs_review":       "YES" if needs_review else "no",
+                "ocr_raw":            ocr_text[:200].replace("\n", " | "),
             }
             rows_all.append(row)
             if needs_review:
                 rows_review.append(row)
-            print(f"brand={brand_name[:30]!r}  cola={cola_score}  conf={confidence}  review={'YES' if needs_review else 'no'}")
+            print(f"brand={brand_name[:28]!r}  hmm={hmm_score:.2f}  agree={agree_score:.0f}  cola={cola_score}  conf={confidence}  review={'YES' if needs_review else 'no'}")
 
     fieldnames = ["filename","brand_name","class_type","abv_percent","net_contents",
-                  "government_warning","cola_match_score","confidence","needs_review","ocr_raw"]
+                  "government_warning","cola_match_score","hmm_score","crf_hmm_agree",
+                  "confidence","needs_review","ocr_raw"]
 
     all_csv = out_dir / "annotations.csv"
     with open(all_csv, "w", newline="", encoding="utf-8") as f:
